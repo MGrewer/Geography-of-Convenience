@@ -1,1 +1,2 @@
-
+# Geography of Convenience App
+This app answers the key business question - "Where do demographics indicate strong spend potential but convenience access is poor?" - by visualizing the "geography of convenience" across the United States.
