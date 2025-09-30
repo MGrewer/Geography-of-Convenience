@@ -139,7 +139,7 @@ COMPETITOR_CATEGORIES = {
 }
 
 # Custom CSS
-st.markdown("""
+css = """
 <style>
     /* Dark theme with gradient backgrounds */
     .stApp {
@@ -215,7 +215,8 @@ st.markdown("""
         border-radius: 8px;
     }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(css, unsafe_allow_html=True)
 
 # Initialize session state
 if 'page' not in st.session_state:
