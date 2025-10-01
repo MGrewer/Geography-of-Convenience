@@ -171,40 +171,72 @@ if 'page' not in st.session_state:
 # Database connection using Databricks Apps SQL warehouse resource
 @st.cache_resource
 def get_db_connection():
-    """Create connection to SQL warehouse using app resources with OAuth"""
+    """Create connection to SQL warehouse using app resources"""
+    # Debug: Show available environment variables
+    st.info("🔍 Checking environment variables...")
+    env_vars = {
+        "DATABRICKS_SERVER_HOSTNAME": os.getenv("DATABRICKS_SERVER_HOSTNAME"),
+        "DATABRICKS_SQL_WAREHOUSE_HTTP_PATH": os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH"),
+        "DATABRICKS_HTTP_PATH": os.getenv("DATABRICKS_HTTP_PATH"),
+        "DATABRICKS_TOKEN": os.getenv("DATABRICKS_TOKEN"),
+        "CLIENT_ID": os.getenv("CLIENT_ID"),
+        "CLIENT_SECRET": os.getenv("CLIENT_SECRET"),
+        "SPARK_REMOTE": os.getenv("SPARK_REMOTE"),
+    }
+    
+    # Show which variables are set
+    available = {k: "✅ Set" if v else "❌ Not set" for k, v in env_vars.items()}
+    st.write("Environment variables status:", available)
+    
     try:
-        # Databricks Apps automatically injects service principal credentials
-        client_id = os.getenv("CLIENT_ID")
-        client_secret = os.getenv("CLIENT_SECRET")
+        # Try different connection methods based on what's available
         
-        # Method 1: Try using the injected access token first (simpler)
-        if os.getenv("DATABRICKS_TOKEN"):
+        # Method 1: Simple connection (if Databricks Apps handles auth automatically)
+        if os.getenv("SPARK_REMOTE"):
+            st.info("Attempting connection using SPARK_REMOTE...")
+            connection = sql.connect()
+            st.success("✅ Connected successfully!")
+            return connection
+            
+        # Method 2: Using SQL warehouse HTTP path
+        elif os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH"):
+            st.info("Attempting connection using SQL_WAREHOUSE_HTTP_PATH...")
             connection = sql.connect(
                 server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME"),
-                http_path=os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH"),
-                access_token=os.getenv("DATABRICKS_TOKEN")
+                http_path=os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH")
             )
-        # Method 2: Use OAuth with service principal credentials
-        elif client_id and client_secret:
+            st.success("✅ Connected successfully!")
+            return connection
+            
+        # Method 3: Using standard HTTP path
+        elif os.getenv("DATABRICKS_HTTP_PATH"):
+            st.info("Attempting connection using DATABRICKS_HTTP_PATH...")
             connection = sql.connect(
                 server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME"),
-                http_path=os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH"),
-                auth_type="databricks-oauth",
-                client_id=client_id,
-                client_secret=client_secret
+                http_path=os.getenv("DATABRICKS_HTTP_PATH")
             )
+            st.success("✅ Connected successfully!")
+            return connection
+            
         else:
-            raise Exception("No authentication credentials found. Check app configuration.")
+            raise Exception("No valid connection method found. Please check app configuration.")
         
-        return connection
     except Exception as e:
-        st.error(f"Database connection failed: {e}")
+        st.error(f"Connection failed: {e}")
         st.info("""
-        **Troubleshooting:**
-        1. Ensure SQL warehouse 'Geography of Convenience' is attached to this app
-        2. Check that the app's service principal has SELECT access to valhalla catalog
-        3. Verify environment variables are set: CLIENT_ID, CLIENT_SECRET
+        **Troubleshooting Steps:**
+        1. Ensure the SQL warehouse is attached as a resource in the app configuration
+        2. The resource key should be 'sql-warehouse'
+        3. Check that the app's service principal has access to the valhalla catalog
         """)
+        
+        # For debugging, show the actual values (be careful in production!)
+        if st.checkbox("Show debug information"):
+            st.write("Available environment variables:")
+            for k, v in env_vars.items():
+                if v:
+                    st.write(f"{k}: {v[:20]}..." if v and len(v) > 20 else f"{k}: {v}")
+        
         st.stop()
         return None
 
