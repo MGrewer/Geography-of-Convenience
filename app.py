@@ -171,72 +171,52 @@ if 'page' not in st.session_state:
 # Database connection using Databricks Apps SQL warehouse resource
 @st.cache_resource
 def get_db_connection():
-    """Create connection to SQL warehouse using app resources"""
-    # Debug: Show available environment variables
-    st.info("🔍 Checking environment variables...")
-    env_vars = {
-        "DATABRICKS_SERVER_HOSTNAME": os.getenv("DATABRICKS_SERVER_HOSTNAME"),
-        "DATABRICKS_SQL_WAREHOUSE_HTTP_PATH": os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH"),
-        "DATABRICKS_HTTP_PATH": os.getenv("DATABRICKS_HTTP_PATH"),
-        "DATABRICKS_TOKEN": os.getenv("DATABRICKS_TOKEN"),
-        "CLIENT_ID": os.getenv("CLIENT_ID"),
-        "CLIENT_SECRET": os.getenv("CLIENT_SECRET"),
-        "SPARK_REMOTE": os.getenv("SPARK_REMOTE"),
-    }
-    
-    # Show which variables are set
-    available = {k: "✅ Set" if v else "❌ Not set" for k, v in env_vars.items()}
-    st.write("Environment variables status:", available)
-    
+    """Create connection to SQL warehouse using Databricks SDK Config"""
     try:
-        # Try different connection methods based on what's available
+        from databricks.sdk.core import Config
         
-        # Method 1: Simple connection (if Databricks Apps handles auth automatically)
-        if os.getenv("SPARK_REMOTE"):
-            st.info("Attempting connection using SPARK_REMOTE...")
-            connection = sql.connect()
-            st.success("✅ Connected successfully!")
-            return connection
-            
-        # Method 2: Using SQL warehouse HTTP path
-        elif os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH"):
-            st.info("Attempting connection using SQL_WAREHOUSE_HTTP_PATH...")
-            connection = sql.connect(
-                server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME"),
-                http_path=os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH")
-            )
-            st.success("✅ Connected successfully!")
-            return connection
-            
-        # Method 3: Using standard HTTP path
-        elif os.getenv("DATABRICKS_HTTP_PATH"):
-            st.info("Attempting connection using DATABRICKS_HTTP_PATH...")
-            connection = sql.connect(
-                server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME"),
-                http_path=os.getenv("DATABRICKS_HTTP_PATH")
-            )
-            st.success("✅ Connected successfully!")
-            return connection
-            
-        else:
-            raise Exception("No valid connection method found. Please check app configuration.")
+        # Use Databricks SDK Config which handles authentication automatically
+        cfg = Config()
+        
+        # The SQL warehouse HTTP path should be set from the attached resource
+        # It might be in one of these environment variables
+        http_path = (
+            os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH") or
+            os.getenv("SQL_WAREHOUSE_HTTP_PATH") or
+            os.getenv("DATABRICKS_HTTP_PATH") or
+            "/sql/1.0/warehouses/your-warehouse-id"  # You may need to hardcode this
+        )
+        
+        # Connect using the Config's authentication
+        connection = sql.connect(
+            server_hostname=cfg.host,
+            http_path=http_path,
+            credentials_provider=lambda: cfg.authenticate
+        )
+        
+        # Test the connection
+        cursor = connection.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        cursor.close()
+        
+        return connection
         
     except Exception as e:
-        st.error(f"Connection failed: {e}")
+        st.error(f"Database connection failed: {e}")
+        
+        # Debug information
+        st.info("Debug Information:")
+        st.write(f"DATABRICKS_CLIENT_ID exists: {bool(os.getenv('DATABRICKS_CLIENT_ID'))}")
+        st.write(f"DATABRICKS_CLIENT_SECRET exists: {bool(os.getenv('DATABRICKS_CLIENT_SECRET'))}")
+        st.write(f"SQL_WAREHOUSE_HTTP_PATH: {os.getenv('DATABRICKS_SQL_WAREHOUSE_HTTP_PATH')}")
+        
         st.info("""
-        **Troubleshooting Steps:**
-        1. Ensure the SQL warehouse is attached as a resource in the app configuration
-        2. The resource key should be 'sql-warehouse'
-        3. Check that the app's service principal has access to the valhalla catalog
+        **If connection still fails:**
+        1. You may need to hardcode the http_path for your SQL warehouse
+        2. Find it in Databricks SQL > SQL Warehouses > Your Warehouse > Connection Details
+        3. It looks like: /sql/1.0/warehouses/abc123def456
         """)
-        
-        # For debugging, show the actual values (be careful in production!)
-        if st.checkbox("Show debug information"):
-            st.write("Available environment variables:")
-            for k, v in env_vars.items():
-                if v:
-                    st.write(f"{k}: {v[:20]}..." if v and len(v) > 20 else f"{k}: {v}")
-        
         st.stop()
         return None
 
