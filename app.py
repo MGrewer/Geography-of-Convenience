@@ -178,14 +178,8 @@ def get_db_connection():
         # Use Databricks SDK Config which handles authentication automatically
         cfg = Config()
         
-        # The SQL warehouse HTTP path should be set from the attached resource
-        # It might be in one of these environment variables
-        http_path = (
-            os.getenv("DATABRICKS_SQL_WAREHOUSE_HTTP_PATH") or
-            os.getenv("SQL_WAREHOUSE_HTTP_PATH") or
-            os.getenv("DATABRICKS_HTTP_PATH") or
-            "/sql/1.0/warehouses/your-warehouse-id"  # You may need to hardcode this
-        )
+        # Specific warehouse HTTP path for Geography of Convenience
+        http_path = "/sql/1.0/warehouses/85813e6551ef07c5"
         
         # Connect using the Config's authentication
         connection = sql.connect(
@@ -209,13 +203,13 @@ def get_db_connection():
         st.info("Debug Information:")
         st.write(f"DATABRICKS_CLIENT_ID exists: {bool(os.getenv('DATABRICKS_CLIENT_ID'))}")
         st.write(f"DATABRICKS_CLIENT_SECRET exists: {bool(os.getenv('DATABRICKS_CLIENT_SECRET'))}")
-        st.write(f"SQL_WAREHOUSE_HTTP_PATH: {os.getenv('DATABRICKS_SQL_WAREHOUSE_HTTP_PATH')}")
+        st.write(f"Host: {cfg.host if 'cfg' in locals() else 'Not available'}")
         
         st.info("""
-        **If connection still fails:**
-        1. You may need to hardcode the http_path for your SQL warehouse
-        2. Find it in Databricks SQL > SQL Warehouses > Your Warehouse > Connection Details
-        3. It looks like: /sql/1.0/warehouses/abc123def456
+        **Connection Troubleshooting:**
+        1. Ensure the SQL warehouse is attached as a resource to this app
+        2. Check that the app's service principal has SELECT access to valhalla catalog
+        3. Verify the warehouse ID matches your 'Geography of Convenience' warehouse
         """)
         st.stop()
         return None
