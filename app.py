@@ -1,67 +1,4 @@
-# Data loading functions with caching
-@st.cache_data(ttl=3600)
-def load_state_data():
-    """Load state-level aggregated data from Unity Catalog or mock data"""
-    conn = get_db_connection()
-    
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 
-                    state_code,
-                    state_name,
-                    population_total as population,
-                    households_total as households,
-                    avg_median_income as median_income,
-                    market_size_score as opportunity_score
-                FROM valhalla.4_app_data.state_all_metrics
-            """)
-            
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            states_df = pd.DataFrame(data, columns=columns)
-            states_df['tam'] = states_df['households'] * states_df['median_income'] * 0.124
-            
-            cursor.close()
-            conn.close()
-            return states_df
-            
-        except Exception as e:
-            st.info(f"Using mock data. Database query failed: {e}")
-    
-    # Fall back to mock data
-    states_df = pd.DataFrame({
-        'state_code': ['CA', 'TX', 'FL', 'NY', 'PA', 'IL', 'OH', 'GA', 'NC', 'MI'],
-        'state_name': ['California', 'Texas', 'Florida', 'New York', 'Pennsylvania', 
-                       'Illinois', 'Ohio', 'Georgia', 'North Carolina', 'Michigan'],
-        'population': [39538223, 29145505, 21538187, 20201249, 13002700,
-                      12812508, 11799448, 10711908, 10439388, 10077331],
-        'households': [13044266, 10036776, 8436926, 7777229, 5194054,
-                      4906019, 4798332, 3999345, 4098987, 4045776],
-        'median_income': [85000, 65000, 60000, 72000, 63000, 68000, 58000, 61000, 57000, 59000],
-        'opportunity_score': [92, 88, 85, 90, 78, 82, 75, 83, 79, 76]
-    })
-    states_df['tam'] = states_df['households'] * states_df['median_income'] * 0.124
-    return states_df
-
-@st.cache_data(ttl=3600)
-def load_h3_data(bounds=None, limit=1000):
-    """Load H3 hexagon data from Unity Catalog or generate mock data"""
-    conn = get_db_connection()
-    
-    if conn:
-        try:
-            cursor = conn.cursor()
-            
-            query = """
-                SELECT 
-                    h3_index,
-                    latitude,
-                    longitude,
-                    population,
-                    households,
-                    # app.py - Geography of Convenience Explorer
+# app.py - Geography of Convenience Explorer
 # Purpose: Main Streamlit application for retail site selection analysis
 # Dependencies: Databricks SQL connector for Unity Catalog access
 # Assumptions: Running on Databricks Apps with 2 vCPU, 6GB RAM
@@ -82,7 +19,7 @@ import json
 
 # Page configuration
 st.set_page_config(
-    page_title="Geography of Convenience Explorer",
+    page_title="Geography of Convenience",
     page_icon="🗺️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -139,20 +76,17 @@ COMPETITOR_CATEGORIES = {
 }
 
 # Custom CSS
-css = """
+css_style = """
 <style>
-    /* Dark theme with gradient backgrounds */
     .stApp {
         background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
     }
     
-    /* Header styling */
     h1 {
         color: #FFFFFF;
         font-weight: 800;
     }
     
-    /* Card components */
     .metric-card {
         background: rgba(30, 41, 59, 0.7);
         border: 1px solid rgba(148, 163, 184, 0.2);
@@ -162,7 +96,6 @@ css = """
         margin-bottom: 1rem;
     }
     
-    /* Button styling */
     .stButton > button {
         background: #FF3621;
         color: white;
@@ -179,7 +112,6 @@ css = """
         background: #E62E1C;
     }
     
-    /* Progress indicators */
     .progress-dot {
         width: 12px;
         height: 12px;
@@ -200,7 +132,6 @@ css = """
         background: #475569;
     }
     
-    /* Metrics styling */
     [data-testid="metric-container"] {
         background: rgba(30, 41, 59, 0.6);
         border: 1px solid rgba(148, 163, 184, 0.1);
@@ -208,7 +139,6 @@ css = """
         border-radius: 8px;
     }
     
-    /* Select boxes */
     .stSelectbox > div > div {
         background: rgba(30, 41, 59, 0.8);
         border: 1px solid rgba(148, 163, 184, 0.2);
@@ -216,7 +146,8 @@ css = """
     }
 </style>
 """
-st.markdown(css, unsafe_allow_html=True)
+
+st.markdown(css_style, unsafe_allow_html=True)
 
 # Initialize session state
 if 'page' not in st.session_state:
@@ -233,6 +164,9 @@ if 'page' not in st.session_state:
     st.session_state.min_opportunity = 500000
     st.session_state.max_distance = None
     st.session_state.data_cache = {}
+    st.session_state.map_bounds = None
+    st.session_state.zoom_level = 4
+    st.session_state.map_center = [39.8283, -98.5795]
 
 # Database connection using Databricks Apps SQL warehouse resource
 @st.cache_resource
@@ -264,7 +198,7 @@ def get_db_connection():
         
         return connection
     except Exception as e:
-        st.error(f"❌ Database connection failed: {e}")
+        st.error(f"Database connection failed: {e}")
         st.info("""
         **Troubleshooting:**
         1. Ensure SQL warehouse 'Geography of Convenience' is attached to this app
@@ -280,7 +214,7 @@ def load_state_data():
     """Load state-level aggregated data from Unity Catalog"""
     conn = get_db_connection()
     if not conn:
-        st.error("❌ No database connection. Please attach a SQL warehouse to this app.")
+        st.error("No database connection. Please attach a SQL warehouse to this app.")
         st.stop()
     
     cursor = conn.cursor()
@@ -313,7 +247,7 @@ def load_h3_data(state_filter=None, bounds=None, limit=5000):
     """Load H3 hexagon data with opportunity scores"""
     conn = get_db_connection()
     if not conn:
-        st.error("❌ No database connection")
+        st.error("No database connection")
         st.stop()
     
     cursor = conn.cursor()
@@ -357,11 +291,12 @@ def load_h3_data(state_filter=None, bounds=None, limit=5000):
     h3_df = pd.DataFrame(data, columns=columns)
     
     # Add opportunity categories for color mapping
-    h3_df['opportunity_category'] = pd.cut(
-        h3_df['opportunity_score'],
-        bins=[0, 20, 40, 60, 80, 100],
-        labels=['Very Low', 'Low', 'Medium', 'High', 'Very High']
-    )
+    if not h3_df.empty:
+        h3_df['opportunity_category'] = pd.cut(
+            h3_df['opportunity_score'],
+            bins=[0, 20, 40, 60, 80, 100],
+            labels=['Very Low', 'Low', 'Medium', 'High', 'Very High']
+        )
     
     cursor.close()
     conn.close()
@@ -372,7 +307,7 @@ def load_grocery_stores(state_filter=None, bounds=None):
     """Load enriched grocery store locations"""
     conn = get_db_connection()
     if not conn:
-        st.error("❌ No database connection")
+        st.error("No database connection")
         st.stop()
     
     cursor = conn.cursor()
@@ -417,48 +352,6 @@ def load_grocery_stores(state_filter=None, bounds=None):
     cursor.close()
     conn.close()
     return stores_df
-
-@st.cache_data(ttl=3600)
-def load_isochrones(store_ids=None, drive_time_minutes=10):
-    """Load pre-computed isochrones for stores"""
-    conn = get_db_connection()
-    if not conn:
-        st.error("❌ No database connection")
-        st.stop()
-    
-    cursor = conn.cursor()
-    
-    # Check if isochrone table exists
-    query = """
-        SELECT 
-            store_id,
-            drive_time_minutes,
-            isochrone_geometry,
-            covered_population,
-            covered_households,
-            h3_cells_covered
-        FROM valhalla.3_gold.store_isochrones
-        WHERE drive_time_minutes = {}
-    """.format(drive_time_minutes)
-    
-    if store_ids:
-        store_id_list = "','".join(store_ids)
-        query += f" AND store_id IN ('{store_id_list}')"
-    
-    query += " LIMIT 1000"
-    
-    try:
-        cursor.execute(query)
-        columns = [desc[0] for desc in cursor.description]
-        data = cursor.fetchall()
-        isochrones_df = pd.DataFrame(data, columns=columns)
-    except:
-        # If isochrone table doesn't exist, return empty dataframe
-        isochrones_df = pd.DataFrame()
-    
-    cursor.close()
-    conn.close()
-    return isochrones_df
 
 def create_progress_bar():
     """Create visual progress indicator"""
@@ -523,7 +416,7 @@ def page_industry_selection():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.markdown(f"""
+        config_html = f"""
         <div class="metric-card">
             <h3 style="color: #FF3621; margin-bottom: 1rem;">Selected Configuration</h3>
             <p><b>Industry:</b> {industry} - {INDUSTRY_VERTICALS[industry]['name']}</p>
@@ -535,7 +428,8 @@ def page_industry_selection():
             and opportunity scoring algorithms used throughout the analysis.
             </p>
         </div>
-        """, unsafe_allow_html=True)
+        """
+        st.markdown(config_html, unsafe_allow_html=True)
     
     with col2:
         st.markdown("### Ready to Continue?")
@@ -1133,84 +1027,6 @@ def page_explorer():
                 )
             )
     
-    # Load isochrones at very detailed zoom levels
-    if st.session_state.zoom_level >= 10 and show_your_stores:
-        @st.cache_data(ttl=300)
-        def load_isochrones_for_viewport(bounds, minutes):
-            """Load drive-time isochrones for visible stores"""
-            # This would load actual isochrone polygons from your data
-            # For now, creating circular approximations
-            your_stores = filtered_stores[filtered_stores['store_type'] == 'your']
-            if your_stores.empty:
-                return pd.DataFrame()
-            
-            # Convert minutes to approximate radius in degrees
-            # Very rough: 1 mile ≈ 0.015 degrees, 30mph average = 0.5 miles/minute
-            radius_degrees = minutes * 0.5 * 0.015
-            
-            isochrone_data = []
-            for _, store in your_stores.iterrows():
-                isochrone_data.append({
-                    'store_id': store['place_id'],
-                    'center_lat': store['latitude'],
-                    'center_lon': store['longitude'],
-                    'radius': radius_degrees,
-                    'drive_minutes': minutes
-                })
-            
-            return pd.DataFrame(isochrone_data)
-        
-        isochrone_data = load_isochrones_for_viewport(bounds, isochrone_minutes)
-        
-        if not isochrone_data.empty:
-            layers.append(
-                pdk.Layer(
-                    'ScatterplotLayer',
-                    data=isochrone_data,
-                    get_position='[center_lon, center_lat]',
-                    get_radius='radius * 111000',  # Convert degrees to meters (roughly)
-                    get_fill_color=[0, 255, 0, 30],
-                    get_line_color=[0, 255, 0, 100],
-                    pickable=False,
-                    stroked=True,
-                    filled=True,
-                    line_width_min_pixels=2,
-                )
-            )
-    
-    # State-level heat map at national view
-    if st.session_state.zoom_level < 6:
-        states_data = load_state_data()
-        if not states_data.empty:
-            # Add state centroids for heat map
-            state_centers = {
-                'CA': [36.7783, -119.4179], 'TX': [31.0000, -99.0000],
-                'FL': [27.6648, -81.5158], 'NY': [43.0000, -75.0000],
-                'PA': [41.2033, -77.1945], 'IL': [40.6331, -89.3985],
-                'OH': [40.4173, -82.9071], 'GA': [32.1656, -82.9001],
-                'NC': [35.7596, -79.0193], 'MI': [44.3148, -85.6024]
-            }
-            
-            for state_code, coords in state_centers.items():
-                if state_code in states_data['state_code'].values:
-                    state_row = states_data[states_data['state_code'] == state_code].iloc[0]
-                    layers.append(
-                        pdk.Layer(
-                            'TextLayer',
-                            data=[{
-                                'position': coords,
-                                'text': f"{state_code}\nScore: {state_row['opportunity_score']:.0f}"
-                            }],
-                            get_position='position',
-                            get_text='text',
-                            get_size=16,
-                            get_color=[255, 255, 255, 255],
-                            get_angle=0,
-                            get_text_anchor='middle',
-                            get_alignment_baseline='center'
-                        )
-                    )
-    
     # Create the deck
     deck = pdk.Deck(
         map_style='mapbox://styles/mapbox/dark-v11',
@@ -1232,7 +1048,7 @@ def page_explorer():
                      Type: ${store_type}` :
                     `<b>Opportunity Score:</b> ${opportunity_score}<br/>
                      <b>Population:</b> ${population}<br/>
-                     <b>Annual Potential:</b> ${annual_potential}<br/>
+                     <b>Annual Potential:</b> $${annual_potential}<br/>
                      <b>Nearest Grocery:</b> ${nearest_grocery_distance} mi`
                 }
             </div>
@@ -1283,347 +1099,6 @@ def page_explorer():
     • **Filters** - Use the sidebar to toggle layers and adjust thresholds
     """)
     
-    # Analysis summary for current view
-    if st.session_state.zoom_level >= 8 and 'h3_data' in locals() and not h3_data.empty:
-        with st.expander("📊 Current View Analysis"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Opportunity distribution in view
-                fig = px.histogram(
-                    h3_data,
-                    x='opportunity_score',
-                    nbins=20,
-                    title='Opportunity Distribution in Current View',
-                    color_discrete_sequence=['#FF3621']
-                )
-                fig.update_layout(height=300, template='plotly_dark')
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                # Top opportunities table
-                st.markdown("**Top 5 Opportunities in View:**")
-                top_5 = h3_data.nlargest(5, 'opportunity_score')[['opportunity_score', 'annual_potential', 'population']]
-                top_5['annual_potential'] = top_5['annual_potential'].apply(lambda x: f'${x/1e6:.1f}M')
-                st.dataframe(top_5, hide_index=True)
-    st.title("🎯 Opportunity Explorer")
-    st.markdown("Interactive map showing high-value expansion opportunities with isochrones")
-    
-    create_progress_bar()
-    
-    # Sidebar filters
-    with st.sidebar:
-        st.markdown("### 🔍 Map Filters")
-        
-        # State filter
-        states_data = load_state_data()
-        selected_state = st.selectbox(
-            "Filter by State",
-            options=[None] + states_data['state_code'].tolist(),
-            format_func=lambda x: "All States" if x is None else x
-        )
-        
-        # Opportunity score filter
-        min_score = st.slider(
-            "Min Opportunity Score",
-            min_value=0,
-            max_value=100,
-            value=60
-        )
-        
-        # Distance filter
-        max_grocery_distance = st.slider(
-            "Max Distance to Grocery (miles)",
-            min_value=0.0,
-            max_value=20.0,
-            value=10.0,
-            step=1.0
-        )
-        
-        # Layer toggles
-        st.markdown("### 🗺️ Map Layers")
-        show_h3 = st.checkbox("H3 Opportunity Hexagons", value=True)
-        show_stores = st.checkbox("Grocery Stores", value=True)
-        show_isochrones = st.checkbox("10-min Drive Isochrones", value=False)
-        
-        # H3 resolution for display
-        h3_limit = st.select_slider(
-            "H3 Cells to Display",
-            options=[500, 1000, 2000, 5000, 10000],
-            value=2000
-        )
-    
-    # Load data based on filters
-    h3_data = load_h3_data(state_filter=selected_state, limit=h3_limit)
-    
-    # Apply opportunity score filter
-    h3_data = h3_data[
-        (h3_data['opportunity_score'] >= min_score) &
-        (h3_data['nearest_grocery_distance'] <= max_grocery_distance)
-    ]
-    
-    if selected_state:
-        # Get state bounds for zoom
-        state_h3 = h3_data[h3_data['opportunity_score'] > 0]
-        if not state_h3.empty:
-            center_lat = state_h3['latitude'].mean()
-            center_lon = state_h3['longitude'].mean()
-            zoom = 6
-        else:
-            center_lat, center_lon, zoom = 39.8283, -98.5795, 4
-    else:
-        center_lat, center_lon, zoom = 39.8283, -98.5795, 4
-    
-    # Load stores if needed
-    if show_stores:
-        stores_data = load_grocery_stores(state_filter=selected_state)
-    
-    # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📍 Layered Map", "📊 Analytics", "📋 Data Table", "🎨 Heat Map"])
-    
-    with tab1:
-        st.markdown(f"**Found {len(h3_data):,} opportunity cells** | Average score: {h3_data['opportunity_score'].mean():.1f}")
-        
-        # Create multi-layer PyDeck map
-        layers = []
-        
-        # H3 Hexagon layer - colored by opportunity score
-        if show_h3 and not h3_data.empty:
-            layers.append(
-                pdk.Layer(
-                    'H3HexagonLayer',
-                    data=h3_data,
-                    get_hexagon='h3_index',
-                    get_fill_color='[255 - opportunity_score * 2, opportunity_score * 2.5, 50, 180]',
-                    get_line_color=[255, 255, 255, 100],
-                    line_width_min_pixels=1,
-                    pickable=True,
-                    auto_highlight=True,
-                    extruded=False,
-                )
-            )
-        
-        # Grocery store points layer
-        if show_stores and 'stores_data' in locals():
-            layers.append(
-                pdk.Layer(
-                    'ScatterplotLayer',
-                    data=stores_data,
-                    get_position='[longitude, latitude]',
-                    get_color='[255, 140, 0, 200]',
-                    get_radius=1000,
-                    pickable=True,
-                    auto_highlight=True,
-                )
-            )
-        
-        # 3D Hexagon elevation by annual potential
-        if st.checkbox("3D View (Elevation = Revenue Potential)"):
-            layers.append(
-                pdk.Layer(
-                    'ColumnLayer',
-                    data=h3_data.nlargest(500, 'annual_potential'),
-                    get_position='[longitude, latitude]',
-                    get_elevation='annual_potential / 100000',
-                    elevation_scale=100,
-                    radius=2000,
-                    get_fill_color='[48, 128, opportunity_score * 2.5, 255]',
-                    pickable=True,
-                    auto_highlight=True,
-                )
-            )
-        
-        # Create the deck
-        deck = pdk.Deck(
-            map_style='mapbox://styles/mapbox/dark-v11',
-            initial_view_state=pdk.ViewState(
-                latitude=center_lat,
-                longitude=center_lon,
-                zoom=zoom,
-                pitch=45 if st.checkbox("3D View (Elevation = Revenue Potential)") else 0,
-                bearing=0,
-            ),
-            layers=layers,
-            tooltip={
-                "html": """
-                <div style="background: rgba(0,0,0,0.8); padding: 10px; border-radius: 5px;">
-                    <b>Opportunity Score:</b> {opportunity_score:.1f}<br/>
-                    <b>Population:</b> {population:,}<br/>
-                    <b>Households:</b> {households:,}<br/>
-                    <b>Median Income:</b> ${median_income:,}<br/>
-                    <b>Annual Potential:</b> ${annual_potential:,.0f}<br/>
-                    <b>Nearest Grocery:</b> {nearest_grocery_distance:.1f} mi<br/>
-                    <b>Stores within 10min:</b> {grocery_stores_within_10min}
-                </div>
-                """,
-                "style": {
-                    "color": "white"
-                }
-            }
-        )
-        
-        st.pydeck_chart(deck)
-        
-        # Key metrics below map
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            top_opp = h3_data['opportunity_score'].max() if not h3_data.empty else 0
-            st.metric("Top Opportunity Score", f"{top_opp:.1f}")
-        with col2:
-            total_tam = h3_data['annual_potential'].sum() if not h3_data.empty else 0
-            st.metric("Total TAM", f"${total_tam/1e9:.2f}B")
-        with col3:
-            underserved = len(h3_data[h3_data['grocery_stores_within_10min'] == 0]) if 'grocery_stores_within_10min' in h3_data.columns else 0
-            st.metric("Underserved Areas", f"{underserved:,}")
-        with col4:
-            avg_income = h3_data['median_income'].mean() if not h3_data.empty else 0
-            st.metric("Avg Median Income", f"${avg_income:,.0f}")
-    
-    with tab2:
-        if not h3_data.empty:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Opportunity distribution
-                fig_dist = px.histogram(
-                    h3_data,
-                    x='opportunity_score',
-                    nbins=20,
-                    title='Opportunity Score Distribution',
-                    color_discrete_sequence=['#FF3621'],
-                    labels={'opportunity_score': 'Opportunity Score', 'count': 'Number of H3 Cells'}
-                )
-                fig_dist.update_layout(
-                    template='plotly_dark',
-                    height=300,
-                    showlegend=False
-                )
-                st.plotly_chart(fig_dist, use_container_width=True)
-                
-                # Income vs Convenience scatter
-                fig_scatter = px.scatter(
-                    h3_data.sample(min(500, len(h3_data))),
-                    x='median_income',
-                    y='convenience_score',
-                    size='annual_potential',
-                    color='opportunity_score',
-                    title='Income vs Convenience Analysis',
-                    color_continuous_scale='Turbo',
-                    labels={
-                        'median_income': 'Median Household Income ($)',
-                        'convenience_score': 'Convenience Score',
-                        'opportunity_score': 'Opportunity'
-                    }
-                )
-                fig_scatter.update_layout(
-                    template='plotly_dark',
-                    height=400
-                )
-                st.plotly_chart(fig_scatter, use_container_width=True)
-            
-            with col2:
-                # Top opportunities by state
-                if selected_state is None:
-                    state_summary = h3_data.groupby('state_code').agg({
-                        'opportunity_score': 'mean',
-                        'annual_potential': 'sum',
-                        'h3_index': 'count'
-                    }).reset_index() if 'state_code' in h3_data.columns else states_data
-                    
-                    fig_states = px.bar(
-                        state_summary.nlargest(10, 'opportunity_score') if 'opportunity_score' in state_summary.columns else states_data.nlargest(10, 'opportunity_score'),
-                        x='opportunity_score',
-                        y='state_code',
-                        orientation='h',
-                        title='Top States by Avg Opportunity',
-                        color_discrete_sequence=['#00A972']
-                    )
-                    fig_states.update_layout(
-                        template='plotly_dark',
-                        height=300
-                    )
-                    st.plotly_chart(fig_states, use_container_width=True)
-                
-                # Distance to grocery distribution
-                fig_distance = px.box(
-                    h3_data,
-                    y='nearest_grocery_distance',
-                    title='Distance to Nearest Grocery Store',
-                    color_discrete_sequence=['#FF3621']
-                )
-                fig_distance.update_layout(
-                    template='plotly_dark',
-                    height=400,
-                    showlegend=False
-                )
-                st.plotly_chart(fig_distance, use_container_width=True)
-    
-    with tab3:
-        # Display top opportunities table
-        display_cols = [
-            'h3_index', 'opportunity_score', 'annual_potential', 'population',
-            'households', 'median_income', 'nearest_grocery_distance',
-            'grocery_stores_within_5min', 'grocery_stores_within_10min'
-        ]
-        
-        # Filter to available columns
-        available_cols = [col for col in display_cols if col in h3_data.columns]
-        
-        if not h3_data.empty:
-            top_opps = h3_data.nlargest(min(1000, len(h3_data)), 'opportunity_score')[available_cols]
-            
-            # Format currency columns
-            if 'annual_potential' in top_opps.columns:
-                top_opps['annual_potential'] = top_opps['annual_potential'].apply(lambda x: f'${x:,.0f}')
-            if 'median_income' in top_opps.columns:
-                top_opps['median_income'] = top_opps['median_income'].apply(lambda x: f'${x:,.0f}')
-            
-            st.dataframe(
-                top_opps,
-                use_container_width=True,
-                height=500
-            )
-            
-            # Download button
-            csv = top_opps.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Opportunity Data",
-                data=csv,
-                file_name=f"opportunities_{selected_state or 'all'}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-    
-    with tab4:
-        # Heat map visualization
-        if not h3_data.empty:
-            st.markdown("### Geographic Opportunity Heat Map")
-            
-            # Create heat map layer
-            heat_deck = pdk.Deck(
-                map_style='mapbox://styles/mapbox/light-v10',
-                initial_view_state=pdk.ViewState(
-                    latitude=center_lat,
-                    longitude=center_lon,
-                    zoom=zoom,
-                    pitch=0,
-                ),
-                layers=[
-                    pdk.Layer(
-                        'HeatmapLayer',
-                        data=h3_data,
-                        get_position='[longitude, latitude]',
-                        get_weight='opportunity_score / 100',
-                        radius_pixels=30,
-                        intensity=1,
-                        threshold=0.05,
-                    )
-                ],
-            )
-            
-            st.pydeck_chart(heat_deck)
-            
-            st.info("🔥 Brighter areas indicate higher opportunity scores based on demographics and grocery accessibility")
-    
     st.markdown("---")
     
     col1, col2, col3 = st.columns(3)
@@ -1651,115 +1126,121 @@ def page_analysis():
     
     # Load sample data for comparison
     h3_data = load_h3_data(limit=100)
-    top_sites = h3_data.nlargest(5, 'opportunity_score')
     
-    st.markdown("### Top 5 Opportunities for Detailed Analysis")
-    
-    # Create comparison metrics
-    cols = st.columns(5)
-    for i, (idx, site) in enumerate(top_sites.iterrows()):
-        with cols[i]:
-            st.metric(
-                f"Site {i+1}",
-                f"{site['opportunity_score']:.1f}",
-                f"${site['annual_potential']/1e6:.1f}M"
-            )
-    
-    st.markdown("---")
-    
-    # Detailed comparison table
-    st.markdown("### Comparative Analysis")
-    
-    comparison_data = {
-        'Metric': ['Opportunity Score', 'Annual Potential', 'Population', 
-                   'Median Income', 'Nearest Grocery', 'Convenience Score'],
-        'Site 1': [
-            f"{top_sites.iloc[0]['opportunity_score']:.1f}",
-            f"${top_sites.iloc[0]['annual_potential']/1e6:.1f}M",
-            f"{top_sites.iloc[0]['population']:,}",
-            f"${top_sites.iloc[0]['median_income']:,}",
-            f"{top_sites.iloc[0]['nearest_grocery_miles']:.1f} mi",
-            f"{top_sites.iloc[0]['convenience_score']:.1f}"
-        ],
-        'Site 2': [
-            f"{top_sites.iloc[1]['opportunity_score']:.1f}",
-            f"${top_sites.iloc[1]['annual_potential']/1e6:.1f}M",
-            f"{top_sites.iloc[1]['population']:,}",
-            f"{top_sites.iloc[1]['median_income']:,}",
-            f"{top_sites.iloc[1]['nearest_grocery_miles']:.1f} mi",
-            f"{top_sites.iloc[1]['convenience_score']:.1f}"
-        ],
-        'Site 3': [
-            f"{top_sites.iloc[2]['opportunity_score']:.1f}",
-            f"${top_sites.iloc[2]['annual_potential']/1e6:.1f}M",
-            f"{top_sites.iloc[2]['population']:,}",
-            f"{top_sites.iloc[2]['median_income']:,}",
-            f"{top_sites.iloc[2]['nearest_grocery_miles']:.1f} mi",
-            f"{top_sites.iloc[2]['convenience_score']:.1f}"
-        ]
-    }
-    
-    comparison_df = pd.DataFrame(comparison_data)
-    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
-    
-    # Radar chart for comparison
-    categories = ['Opportunity', 'Population', 'Income', 'Convenience', 'Market Gap']
-    
-    fig = go.Figure()
-    
-    for i in range(3):
-        fig.add_trace(go.Scatterpolar(
-            r=[
-                top_sites.iloc[i]['opportunity_score'],
-                top_sites.iloc[i]['population'] / 1000,
-                top_sites.iloc[i]['median_income'] / 1000,
-                top_sites.iloc[i]['convenience_score'],
-                100 - top_sites.iloc[i]['grocery_density'] * 10
+    if not h3_data.empty:
+        top_sites = h3_data.nlargest(5, 'opportunity_score')
+        
+        st.markdown("### Top 5 Opportunities for Detailed Analysis")
+        
+        # Create comparison metrics
+        cols = st.columns(5)
+        for i, (idx, site) in enumerate(top_sites.iterrows()):
+            with cols[i]:
+                st.metric(
+                    f"Site {i+1}",
+                    f"{site['opportunity_score']:.1f}",
+                    f"${site['annual_potential']/1e6:.1f}M"
+                )
+        
+        st.markdown("---")
+        
+        # Detailed comparison table
+        st.markdown("### Comparative Analysis")
+        
+        comparison_data = {
+            'Metric': ['Opportunity Score', 'Annual Potential', 'Population', 
+                       'Median Income', 'Nearest Grocery', 'Convenience Score'],
+            'Site 1': [
+                f"{top_sites.iloc[0]['opportunity_score']:.1f}",
+                f"${top_sites.iloc[0]['annual_potential']/1e6:.1f}M",
+                f"{top_sites.iloc[0]['population']:,}",
+                f"${top_sites.iloc[0]['median_income']:,}",
+                f"{top_sites.iloc[0]['nearest_grocery_distance']:.1f} mi",
+                f"{top_sites.iloc[0]['convenience_score']:.1f}"
             ],
-            theta=categories,
-            fill='toself',
-            name=f'Site {i+1}'
-        ))
-    
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 100]
-            )),
-        showlegend=True,
-        template='plotly_dark',
-        title="Multi-Dimensional Site Comparison"
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Summary and recommendations
-    st.markdown("### 💡 Key Insights & Recommendations")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <h4 style="color: #FF3621;">Primary Opportunity</h4>
-            <p><b>Site 1</b> offers the highest opportunity score with strong demographics
-            and minimal competition. The area shows high income levels with limited
-            grocery access, creating ideal conditions for market entry.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <h4 style="color: #00A972;">Expansion Strategy</h4>
-            <p>Based on your {st.session_state.penetration} penetration scenario,
-            focusing on the top 3 sites could generate ${(top_sites.head(3)['annual_potential'].sum() / 1e6):.1f}M
-            in annual revenue potential.</p>
-        </div>
-        """, unsafe_allow_html=True)
+            'Site 2': [
+                f"{top_sites.iloc[1]['opportunity_score']:.1f}",
+                f"${top_sites.iloc[1]['annual_potential']/1e6:.1f}M",
+                f"{top_sites.iloc[1]['population']:,}",
+                f"${top_sites.iloc[1]['median_income']:,}",
+                f"{top_sites.iloc[1]['nearest_grocery_distance']:.1f} mi",
+                f"{top_sites.iloc[1]['convenience_score']:.1f}"
+            ],
+            'Site 3': [
+                f"{top_sites.iloc[2]['opportunity_score']:.1f}",
+                f"${top_sites.iloc[2]['annual_potential']/1e6:.1f}M",
+                f"{top_sites.iloc[2]['population']:,}",
+                f"${top_sites.iloc[2]['median_income']:,}",
+                f"{top_sites.iloc[2]['nearest_grocery_distance']:.1f} mi",
+                f"{top_sites.iloc[2]['convenience_score']:.1f}"
+            ]
+        }
+        
+        comparison_df = pd.DataFrame(comparison_data)
+        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+        
+        # Radar chart for comparison
+        categories = ['Opportunity', 'Population', 'Income', 'Convenience', 'Market Gap']
+        
+        fig = go.Figure()
+        
+        for i in range(min(3, len(top_sites))):
+            fig.add_trace(go.Scatterpolar(
+                r=[
+                    top_sites.iloc[i]['opportunity_score'],
+                    top_sites.iloc[i]['population'] / 1000,
+                    top_sites.iloc[i]['median_income'] / 1000,
+                    top_sites.iloc[i]['convenience_score'],
+                    100 - top_sites.iloc[i].get('grocery_density', 5) * 10
+                ],
+                theta=categories,
+                fill='toself',
+                name=f'Site {i+1}'
+            ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 100]
+                )),
+            showlegend=True,
+            template='plotly_dark',
+            title="Multi-Dimensional Site Comparison"
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Summary and recommendations
+        st.markdown("### 💡 Key Insights & Recommendations")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            primary_html = f"""
+            <div class="metric-card">
+                <h4 style="color: #FF3621;">Primary Opportunity</h4>
+                <p><b>Site 1</b> offers the highest opportunity score with strong demographics
+                and minimal competition. The area shows high income levels with limited
+                grocery access, creating ideal conditions for market entry.</p>
+            </div>
+            """
+            st.markdown(primary_html, unsafe_allow_html=True)
+        
+        with col2:
+            strategy_html = f"""
+            <div class="metric-card">
+                <h4 style="color: #00A972;">Expansion Strategy</h4>
+                <p>Based on your {st.session_state.penetration} penetration scenario,
+                focusing on the top 3 sites could generate ${(top_sites.head(3)['annual_potential'].sum() / 1e6):.1f}M
+                in annual revenue potential.</p>
+            </div>
+            """
+            st.markdown(strategy_html, unsafe_allow_html=True)
+    else:
+        st.info("No data available for analysis. Please check your database connection.")
     
     st.markdown("---")
     
